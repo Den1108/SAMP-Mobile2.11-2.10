@@ -18,11 +18,11 @@ const char* g_szServerNames[] = {
 constexpr size_t MAX_SERVERS = sizeof(g_szServerNames)
         / sizeof(g_szServerNames[0]);
 
-#define IP1 "89.163.213.148" // len 9
-#define IP2 "127.0.0.1" // len 9
+#define IP1 "89.163.213.148"
+#define IP2 "89.163.213.148"
 const CServerInstance::CServerInstanceEncrypted g_sEncryptedAddresses[MAX_SERVERS] = {
-        CServerInstance::create((IP1), 1, 9, 40021, false),
-        CServerInstance::create((IP2), 1, 9, 7777, false)
+        CServerInstance::create((IP1), 1, 15, 40021, false),
+        CServerInstance::create((IP2), 1, 15, 40021, false)
 };
 
 int CServerInstance::iServer = -1;
