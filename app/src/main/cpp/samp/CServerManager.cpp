@@ -9,16 +9,39 @@ extern CNetGame *pNetGame;
 #include "java/jniutil.h"
 
 extern CJavaWrapper *pJavaWrapper;
+#define SRV_NAME1 "1 "
+#define SRV_NAME2 "2 "
+const char* g_szServerNames[] = {
+        (SRV_NAME1),
+        (SRV_NAME2)
+};
+constexpr size_t MAX_SERVERS = sizeof(g_szServerNames)
+        / sizeof(g_szServerNames[0]);
+
+#define IP1 "89.163.213.148" // len 9
+#define IP2 "127.0.0.1" // len 9
+const CServerInstance::CServerInstanceEncrypted g_sEncryptedAddresses[MAX_SERVERS] = {
+        CServerInstance::create((IP1), 1, 9, 40021, false),
+        CServerInstance::create((IP2), 1, 9, 7777, false)
+};
 
 int CServerInstance::iServer = -1;
-
 void CServerInstance::initConnection(int id) {
     CServerInstance::iServer = id;
 
-    // Подключаемся по IP и порту, указанным в settings.ini
-    pNetGame = new CNetGame(
-            pSettings->Get().szIP,
-            pSettings->Get().iPort,
-            pSettings->Get().szNickName,
-            pSettings->Get().szPassword);
+    std::string srvStr = "{\"value\":" + std::to_string(CServerInstance::iServer) + "}";
+
+    if(CServerInstance::iServer == -1) {
+        pNetGame = new CNetGame(
+                ("89.163.213.148"),
+                40021,
+                pSettings->Get().szNickName,
+                pSettings->Get().szPassword);
+    } else {
+        pNetGame = new CNetGame(
+                g_sEncryptedAddresses[CServerInstance::iServer].decrypt(),
+                g_sEncryptedAddresses[CServerInstance::iServer].getPort(),
+                pSettings->Get().szNickName,
+                pSettings->Get().szPassword);
+    }
 }
