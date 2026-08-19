@@ -9,8 +9,8 @@ extern CNetGame *pNetGame;
 #include "java/jniutil.h"
 
 extern CJavaWrapper *pJavaWrapper;
-#define SRV_NAME1 "1 "
-#define SRV_NAME2 "2 "
+#define SRV_NAME1 " "
+#define SRV_NAME2 " "
 const char* g_szServerNames[] = {
         (SRV_NAME1),
         (SRV_NAME2)
