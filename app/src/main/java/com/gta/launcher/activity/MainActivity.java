@@ -46,7 +46,7 @@ public class MainActivity extends AppCompatActivity {
                 if (allGranted) {
                     storagePermissionGranted = true;
                     Log.d("MainActivity", "All storage permissions granted");
-                    startGameIfReady();
+                    //startGameIfReady();
                 } else {
                     storagePermissionGranted = false;
                     Log.e("MainActivity", "Storage permissions denied");
@@ -64,7 +64,7 @@ public class MainActivity extends AppCompatActivity {
                     if (Environment.isExternalStorageManager()) {
                         storagePermissionGranted = true;
                         Log.d("MainActivity", "Manage storage permission granted");
-                        startGameIfReady();
+                        //startGameIfReady();
                     } else {
                         storagePermissionGranted = false;
                         Log.e("MainActivity", "Manage storage permission denied");
