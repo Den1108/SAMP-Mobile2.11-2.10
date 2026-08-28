@@ -488,7 +488,7 @@ void CNetGame::ProcessConnecting()
 {
 	if (GetTickCount() - m_dwLastConnectAttempt > 1000/*3000*/)
 	{
-		if (pUI) pUI->chat()->addDebugMessage("Connecting to %s:%d...", m_szHostOrIp, m_iPort);
+		//if (pUI) pUI->chat()->addDebugMessage("Connecting to %s:%d...", m_szHostOrIp, m_iPort);
 		if (pUI) pUI->chat()->addDebugMessage("Connecting to Server...");
 
 		m_pRakClient->Connect(m_szHostOrIp, m_iPort, 0, 0, 2);
