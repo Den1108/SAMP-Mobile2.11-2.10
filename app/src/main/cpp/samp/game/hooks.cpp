@@ -1740,6 +1740,20 @@ size_t OS_FileRead_hook(OSFile a1, void *buffer, size_t numBytes)
     return OS_FileRead(a1, buffer, numBytes);
 }
 
+// Логируем имя текущей текстуры перед полной загрузкой, чтобы точно
+// узнать, на какой именно текстуре крашит/спамит RLEDecompress.
+void (*TextureDatabaseRuntime__LoadFullTexture)(TextureDatabaseRuntime* thiz, uint32_t index);
+void TextureDatabaseRuntime__LoadFullTexture_hook(TextureDatabaseRuntime* thiz, uint32_t index) {
+    const char* name = "?";
+    if (thiz && index < thiz->entries.numEntries) {
+        name = thiz->entries.dataPtr[index].name;
+        if (!name) name = "(null)";
+    }
+    Log("LoadFullTexture: %s (db=%s, idx=%u)", name, thiz && thiz->name ? thiz->name : "?", index);
+
+    TextureDatabaseRuntime__LoadFullTexture(thiz, index);
+}
+
 void (*RLEDecompress)(uint8_t* pDest, size_t uiDestSize, uint8_t const* pSrc, size_t uiSegSize, uint32_t uiEscape);
 void RLEDecompress_hook(uint8_t* pDest, size_t uiDestSize, const uint8_t* pSrc, size_t uiSegSize, uint32_t uiEscape) {
 
@@ -2006,6 +2020,8 @@ void InstallSpecialHooks()
     //CHook::InstallPLT(g_libGTASA + (VER_x32 ? 0x6701D4 : 0x840708), &RLEDecompress_hook, &RLEDecompress);
 
     // CHook::InlineHook("_Z11OS_FileReadPvS_i", &OS_FileRead_hook, &OS_FileRead);
+
+    CHook::InlineHook("_ZN22TextureDatabaseRuntime15LoadFullTextureEj", &TextureDatabaseRuntime__LoadFullTexture_hook, &TextureDatabaseRuntime__LoadFullTexture);
 
     //CHook::InlineHook("_Z32_rxOpenGLDefaultAllInOneRenderCBP10RwResEntryPvhj", &rxOpenGLDefaultAllInOneRenderCB_hook, &rxOpenGLDefaultAllInOneRenderCB);
     //CHook::InlineHook("_ZN25CCustomBuildingDNPipeline18CustomPipeRenderCBEP10RwResEntryPvhj", &CCustomBuildingDNPipeline__CustomPipeRenderCB_hook, &CCustomBuildingDNPipeline__CustomPipeRenderCB);
