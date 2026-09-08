@@ -1756,13 +1756,20 @@ void RLEDecompress_hook(uint8_t* pDest, size_t uiDestSize, const uint8_t* pSrc, 
     }
 
     // Безопасная реализация настоящего алгоритма движка (сверено по
-    // дизассемблеру libGame.so): в оригинале проверяется только граница
-    // БУФЕРА НАЗНАЧЕНИЯ, источник читается без проверок вообще. Мы делаем
-    // то же самое, но не даём записи выйти за pEndOfDest — вместо краша
-    // просто прерываем декомпрессию именно этой (битой/несовместимой)
-    // текстуры и идём дальше.
+    // дизассемблеру libGame.so). ВАЖНО: движок выделяет буфер назначения
+    // С ЗАПАСОМ — округляет вверх до целого числа сегментов (плюс до 8
+    // байт), именно чтобы последний сегмент мог "вылезти" за точный
+    // uiDestSize — это штатное поведение, не ошибка. Раньше мы сверяли
+    // запись с точным uiDestSize и ловили кучу ложных срабатываний на
+    // абсолютно нормальных текстурах. Теперь считаем реальную (округлённую)
+    // границу буфера и проверяем именно по ней — а завершаем цикл всё ещё
+    // по точному uiDestSize, как и оригинал.
     const uint8_t* pTempSrc = pSrc;
     const uint8_t* const pEndOfDest = pDest + uiDestSize;
+
+    size_t roundedSize = ((uiDestSize + uiSegSize - 1) / uiSegSize) * uiSegSize;
+    size_t allocSize = (roundedSize + 7) & ~static_cast<size_t>(7);
+    const uint8_t* const pSafeLimit = pDest + allocSize;
 
     try {
         while (pDest < pEndOfDest) {
@@ -1770,7 +1777,7 @@ void RLEDecompress_hook(uint8_t* pDest, size_t uiDestSize, const uint8_t* pSrc, 
                 uint8_t ucCurSeg = pTempSrc[1];
                 // count == 0 — валидный случай (нет повторов), это НЕ ошибка.
                 while (ucCurSeg--) {
-                    if (pDest + uiSegSize > pEndOfDest) {
+                    if (pDest + uiSegSize > pSafeLimit) {
                         throw std::runtime_error("destination overflow (escape)");
                     }
                     memcpy(pDest, pTempSrc + 2, uiSegSize);
@@ -1778,7 +1785,7 @@ void RLEDecompress_hook(uint8_t* pDest, size_t uiDestSize, const uint8_t* pSrc, 
                 }
                 pTempSrc += 2 + uiSegSize;
             } else {
-                if (pDest + uiSegSize > pEndOfDest) {
+                if (pDest + uiSegSize > pSafeLimit) {
                     throw std::runtime_error("destination overflow (literal)");
                 }
                 memcpy(pDest, pTempSrc, uiSegSize);
