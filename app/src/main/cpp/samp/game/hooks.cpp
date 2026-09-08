@@ -1730,18 +1730,10 @@ bool RwResourcesFreeResEntry_hook(void* entry)
     return result;
 }
 
-static uint32_t dwRLEDecompressSourceSize = 0;
-
-size_t (*OS_FileRead)(OSFile a1, void *buffer, size_t numBytes);
-size_t OS_FileRead_hook(OSFile a1, void *buffer, size_t numBytes)
-{
-    dwRLEDecompressSourceSize = numBytes;
-
-    return OS_FileRead(a1, buffer, numBytes);
-}
-
 // Логируем имя текущей текстуры перед полной загрузкой, чтобы точно
 // узнать, на какой именно текстуре крашит/спамит RLEDecompress.
+static char g_szCurrentTextureName[256] = "?";
+
 void (*TextureDatabaseRuntime__LoadFullTexture)(TextureDatabaseRuntime* thiz, uint32_t index);
 void TextureDatabaseRuntime__LoadFullTexture_hook(TextureDatabaseRuntime* thiz, uint32_t index) {
     const char* name = "?";
@@ -1749,7 +1741,9 @@ void TextureDatabaseRuntime__LoadFullTexture_hook(TextureDatabaseRuntime* thiz, 
         name = thiz->entries.dataPtr[index].name;
         if (!name) name = "(null)";
     }
-    Log("LoadFullTexture: %s (db=%s, idx=%u)", name, thiz && thiz->name ? thiz->name : "?", index);
+    snprintf(g_szCurrentTextureName, sizeof(g_szCurrentTextureName), "%s (db=%s, idx=%u)",
+             name, thiz && thiz->name ? thiz->name : "?", index);
+    Log("LoadFullTexture: %s", g_szCurrentTextureName);
 
     TextureDatabaseRuntime__LoadFullTexture(thiz, index);
 }
@@ -1758,47 +1752,42 @@ void (*RLEDecompress)(uint8_t* pDest, size_t uiDestSize, uint8_t const* pSrc, si
 void RLEDecompress_hook(uint8_t* pDest, size_t uiDestSize, const uint8_t* pSrc, size_t uiSegSize, uint32_t uiEscape) {
 
     if (!pDest || !pSrc || uiDestSize == 0 || uiSegSize == 0) {
-        // Обработка некорректных входных данных или размеров
-        // Здесь можно сгенерировать исключение или вернуть код ошибки
         return;
     }
 
+    // Безопасная реализация настоящего алгоритма движка (сверено по
+    // дизассемблеру libGame.so): в оригинале проверяется только граница
+    // БУФЕРА НАЗНАЧЕНИЯ, источник читается без проверок вообще. Мы делаем
+    // то же самое, но не даём записи выйти за pEndOfDest — вместо краша
+    // просто прерываем декомпрессию именно этой (битой/несовместимой)
+    // текстуры и идём дальше.
     const uint8_t* pTempSrc = pSrc;
     const uint8_t* const pEndOfDest = pDest + uiDestSize;
-    const uint8_t* const pEndOfSrc = pSrc + dwRLEDecompressSourceSize; // Предполагается, что dwRLEDecompressSourceSize определено правильно
 
     try {
-        while (pDest < pEndOfDest && pTempSrc < pEndOfSrc) {
+        while (pDest < pEndOfDest) {
             if (*pTempSrc == uiEscape) {
-                if (pTempSrc + 1 >= pEndOfSrc || pTempSrc[1] == 0 || pTempSrc + 2 + uiSegSize > pEndOfSrc) {
-                    // Обработка ошибки, неверное значение ucCurSeg или недостаточно данных в исходном буфере
-                    throw std::runtime_error("rled error 1");
-                }
-
                 uint8_t ucCurSeg = pTempSrc[1];
+                // count == 0 — валидный случай (нет повторов), это НЕ ошибка.
                 while (ucCurSeg--) {
                     if (pDest + uiSegSize > pEndOfDest) {
-                        // Обработка ошибки, недостаточно места в целевом буфере
-                        throw std::runtime_error("rled error 2");
+                        throw std::runtime_error("destination overflow (escape)");
                     }
                     memcpy(pDest, pTempSrc + 2, uiSegSize);
                     pDest += uiSegSize;
                 }
                 pTempSrc += 2 + uiSegSize;
             } else {
-                if (pDest + uiSegSize > pEndOfDest || pTempSrc + uiSegSize > pEndOfSrc) {
-                    // Обработка ошибки, недостаточно данных в исходном буфере или недостаточно места в целевом буфере
-                    throw std::runtime_error("rled error 3");
+                if (pDest + uiSegSize > pEndOfDest) {
+                    throw std::runtime_error("destination overflow (literal)");
                 }
                 memcpy(pDest, pTempSrc, uiSegSize);
                 pDest += uiSegSize;
                 pTempSrc += uiSegSize;
             }
         }
-
-        dwRLEDecompressSourceSize = 0;
     } catch (const std::exception& e) {
-        Log("%s", e.what());
+        Log("RLEDecompress: %s (texture: %s)", e.what(), g_szCurrentTextureName);
     }
 }
 
@@ -2019,7 +2008,7 @@ void InstallSpecialHooks()
 
     CHook::InlineHook("_Z13RLEDecompressPhjPKhjj", &RLEDecompress_hook, &RLEDecompress);
 
-    CHook::InlineHook("_Z11OS_FileReadPvS_i", &OS_FileRead_hook, &OS_FileRead);
+    // OS_FileRead хук больше не нужен — dwRLEDecompressSourceSize не используется
 
     CHook::InlineHook("_ZN22TextureDatabaseRuntime15LoadFullTextureEj", &TextureDatabaseRuntime__LoadFullTexture_hook, &TextureDatabaseRuntime__LoadFullTexture);
 
