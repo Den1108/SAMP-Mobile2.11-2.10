@@ -1,4 +1,6 @@
 #include <GLES2/gl2.h>
+#include <csetjmp>
+#include <csignal>
 #include "../main.h"
 #include "../vendor/armhook/patch.h"
 #include "game.h"
@@ -1748,13 +1750,17 @@ void TextureDatabaseRuntime__LoadFullTexture_hook(TextureDatabaseRuntime* thiz, 
     TextureDatabaseRuntime__LoadFullTexture(thiz, index);
 }
 
-void (*RLEDecompress)(uint8_t* pDest, size_t uiDestSize, uint8_t const* pSrc, size_t uiSegSize, uint32_t uiEscape);
-void RLEDecompress_hook(uint8_t* pDest, size_t uiDestSize, const uint8_t* pSrc, size_t uiSegSize, uint32_t uiEscape) {
+// Ловушка на SIGSEGV: у некоторых записей (напр. concretemanky) поток
+// сжатых данных настолько битый, что чтение уходит далеко за пределы
+// СВОЕГО ЖЕ (source) буфера — а его точный размер нам неизвестен, так что
+// проверкой границ это не поймать. Единственный надёжный способ не
+// уронить всю игру — поймать сам сигнал.
+static thread_local sigjmp_buf g_rleDecompressJmpBuf;
+static void RLEDecompress_SigSegvHandler(int) {
+    siglongjmp(g_rleDecompressJmpBuf, 1);
+}
 
-    if (!pDest || !pSrc || uiDestSize == 0 || uiSegSize == 0) {
-        return;
-    }
-
+static void RLEDecompress_safe(uint8_t* pDest, size_t uiDestSize, const uint8_t* pSrc, size_t uiSegSize, uint32_t uiEscape) {
     // Безопасная реализация настоящего алгоритма движка (сверено по
     // дизассемблеру libGame.so). ВАЖНО: движок выделяет буфер назначения
     // С ЗАПАСОМ — округляет вверх до целого числа сегментов (плюс до 8
@@ -1771,31 +1777,54 @@ void RLEDecompress_hook(uint8_t* pDest, size_t uiDestSize, const uint8_t* pSrc, 
     size_t allocSize = (roundedSize + 7) & ~static_cast<size_t>(7);
     const uint8_t* const pSafeLimit = pDest + allocSize;
 
-    try {
-        while (pDest < pEndOfDest) {
-            if (*pTempSrc == uiEscape) {
-                uint8_t ucCurSeg = pTempSrc[1];
-                // count == 0 — валидный случай (нет повторов), это НЕ ошибка.
-                while (ucCurSeg--) {
-                    if (pDest + uiSegSize > pSafeLimit) {
-                        throw std::runtime_error("destination overflow (escape)");
-                    }
-                    memcpy(pDest, pTempSrc + 2, uiSegSize);
-                    pDest += uiSegSize;
-                }
-                pTempSrc += 2 + uiSegSize;
-            } else {
+    while (pDest < pEndOfDest) {
+        if (*pTempSrc == uiEscape) {
+            uint8_t ucCurSeg = pTempSrc[1];
+            // count == 0 — валидный случай (нет повторов), это НЕ ошибка.
+            while (ucCurSeg--) {
                 if (pDest + uiSegSize > pSafeLimit) {
-                    throw std::runtime_error("destination overflow (literal)");
+                    throw std::runtime_error("destination overflow (escape)");
                 }
-                memcpy(pDest, pTempSrc, uiSegSize);
+                memcpy(pDest, pTempSrc + 2, uiSegSize);
                 pDest += uiSegSize;
-                pTempSrc += uiSegSize;
             }
+            pTempSrc += 2 + uiSegSize;
+        } else {
+            if (pDest + uiSegSize > pSafeLimit) {
+                throw std::runtime_error("destination overflow (literal)");
+            }
+            memcpy(pDest, pTempSrc, uiSegSize);
+            pDest += uiSegSize;
+            pTempSrc += uiSegSize;
         }
-    } catch (const std::exception& e) {
-        Log("RLEDecompress: %s (texture: %s)", e.what(), g_szCurrentTextureName);
     }
+}
+
+void (*RLEDecompress)(uint8_t* pDest, size_t uiDestSize, uint8_t const* pSrc, size_t uiSegSize, uint32_t uiEscape);
+void RLEDecompress_hook(uint8_t* pDest, size_t uiDestSize, const uint8_t* pSrc, size_t uiSegSize, uint32_t uiEscape) {
+
+    if (!pDest || !pSrc || uiDestSize == 0 || uiSegSize == 0) {
+        return;
+    }
+
+    struct sigaction sa{};
+    struct sigaction oldSa{};
+    sa.sa_handler = RLEDecompress_SigSegvHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGSEGV, &sa, &oldSa);
+
+    if (sigsetjmp(g_rleDecompressJmpBuf, 1) == 0) {
+        try {
+            RLEDecompress_safe(pDest, uiDestSize, pSrc, uiSegSize, uiEscape);
+        } catch (const std::exception& e) {
+            Log("RLEDecompress: %s (texture: %s)", e.what(), g_szCurrentTextureName);
+        }
+    } else {
+        Log("RLEDecompress: caught SIGSEGV (texture: %s)", g_szCurrentTextureName);
+    }
+
+    sigaction(SIGSEGV, &oldSa, nullptr);
 }
 
 void* g_pSprintButton = nullptr;
