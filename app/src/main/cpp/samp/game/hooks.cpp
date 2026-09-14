@@ -1759,6 +1759,23 @@ static void RLEDecompress_SigSegvHandler(int) {
     siglongjmp(g_rleDecompressJmpBuf, 1);
 }
 
+// Заполняем буфер назначения битым DXT1-блоком, который после декодирования
+// видеокартой даёт СПЛОШНОЙ ярко-розовый (magenta) цвет — чтобы битую
+// текстуру было видно на глаз прямо в игре, а не искать её по времени
+// сообщения в чате. Блок DXT1 — 8 байт: color0 (RGB565, 2 байта),
+// color1 (2 байта), 4 байта индексов. Ставим color0 = color1 = magenta и
+// все индексы в 0, тогда для любого текселя блока выбирается color0.
+static void RLEDecompress_FillBroken(uint8_t* pDest, size_t uiDestSize) {
+    static const uint8_t magentaDxt1Block[8] = {
+        0x1F, 0xF8,   // color0 = RGB565 magenta (little-endian)
+        0x1F, 0xF8,   // color1 = тот же magenta
+        0x00, 0x00, 0x00, 0x00 // индексы — все тексели = color0
+    };
+    for (size_t i = 0; i < uiDestSize; i++) {
+        pDest[i] = magentaDxt1Block[i & 7];
+    }
+}
+
 static void RLEDecompress_safe(uint8_t* pDest, size_t uiDestSize, const uint8_t* pSrc, size_t uiSegSize, uint32_t uiEscape) {
     // Безопасная реализация настоящего алгоритма движка (сверено по
     // дизассемблеру libGame.so). ВАЖНО: движок выделяет буфер назначения
@@ -1818,12 +1835,14 @@ void RLEDecompress_hook(uint8_t* pDest, size_t uiDestSize, const uint8_t* pSrc, 
             RLEDecompress_safe(pDest, uiDestSize, pSrc, uiSegSize, uiEscape);
         } catch (const std::exception& e) {
             Log("RLEDecompress: %s (texture: %s)", e.what(), g_szCurrentTextureName);
+            RLEDecompress_FillBroken(pDest, uiDestSize);
             if (pUI && pUI->chat()) {
                 pUI->chat()->addDebugMessage("BROKEN texture: %s (%s)", g_szCurrentTextureName, e.what());
             }
         }
     } else {
         Log("RLEDecompress: caught SIGSEGV (texture: %s)", g_szCurrentTextureName);
+        RLEDecompress_FillBroken(pDest, uiDestSize);
         if (pUI && pUI->chat()) {
             pUI->chat()->addDebugMessage("BROKEN texture: %s (crash caught)", g_szCurrentTextureName);
         }
