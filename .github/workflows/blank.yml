@@ -23,9 +23,15 @@ jobs:
 
       - name: Install NDK & CMake
         run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager --install "ndk;26.2.11394342"
-          sdkmanager --install "cmake;3.22.1"
+          SDKMANAGER=$(find "$ANDROID_HOME" -name sdkmanager -type f 2>/dev/null | head -n 1)
+          if [ -z "$SDKMANAGER" ]; then
+            echo "sdkmanager not found under ANDROID_HOME=$ANDROID_HOME"
+            exit 1
+          fi
+          echo "Using sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses || true
+          "$SDKMANAGER" --install "ndk;26.2.11394342"
+          "$SDKMANAGER" --install "cmake;3.22.1"
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
