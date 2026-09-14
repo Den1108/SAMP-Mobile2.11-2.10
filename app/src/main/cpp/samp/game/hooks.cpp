@@ -1745,7 +1745,6 @@ void TextureDatabaseRuntime__LoadFullTexture_hook(TextureDatabaseRuntime* thiz, 
     }
     snprintf(g_szCurrentTextureName, sizeof(g_szCurrentTextureName), "%s (db=%s, idx=%u)",
              name, thiz && thiz->name ? thiz->name : "?", index);
-    Log("LoadFullTexture: %s", g_szCurrentTextureName);
 
     TextureDatabaseRuntime__LoadFullTexture(thiz, index);
 }
@@ -1819,9 +1818,15 @@ void RLEDecompress_hook(uint8_t* pDest, size_t uiDestSize, const uint8_t* pSrc, 
             RLEDecompress_safe(pDest, uiDestSize, pSrc, uiSegSize, uiEscape);
         } catch (const std::exception& e) {
             Log("RLEDecompress: %s (texture: %s)", e.what(), g_szCurrentTextureName);
+            if (pUI && pUI->chat()) {
+                pUI->chat()->addDebugMessage("BROKEN texture: %s (%s)", g_szCurrentTextureName, e.what());
+            }
         }
     } else {
         Log("RLEDecompress: caught SIGSEGV (texture: %s)", g_szCurrentTextureName);
+        if (pUI && pUI->chat()) {
+            pUI->chat()->addDebugMessage("BROKEN texture: %s (crash caught)", g_szCurrentTextureName);
+        }
     }
 
     sigaction(SIGSEGV, &oldSa, nullptr);
