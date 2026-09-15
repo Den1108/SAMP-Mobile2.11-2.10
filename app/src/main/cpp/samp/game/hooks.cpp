@@ -1736,6 +1736,35 @@ bool RwResourcesFreeResEntry_hook(void* entry)
 // узнать, на какой именно текстуре крашит/спамит RLEDecompress.
 static char g_szCurrentTextureName[256] = "?";
 
+// === ВРЕМЕННЫЙ ДИАГНОСТИЧЕСКИЙ ХУК ===
+// Печатает точное байтовое смещение записи idx=191 в базе "gta3" внутри
+// файла gta3.img (LoadDataOffsets строит эту таблицу один раз при старте).
+// После того как узнаем число — хук нужно убрать, он не для продакшена.
+struct TDBArrayUInt { uint32_t numAlloced; uint32_t numEntries; uint32_t* dataPtr; };
+
+bool (*TextureDatabase__LoadDataOffsets)(TextureDatabase* thiz, TextureDatabaseFormat format, TDBArrayUInt& offsets, void*& outParam, bool flag);
+bool TextureDatabase__LoadDataOffsets_hook(TextureDatabase* thiz, TextureDatabaseFormat format, TDBArrayUInt& offsets, void*& outParam, bool flag) {
+    bool result = TextureDatabase__LoadDataOffsets(thiz, format, offsets, outParam, flag);
+
+    const char* dbName = thiz ? thiz->name : nullptr;
+    if (dbName && strcmp(dbName, "gta3") == 0) {
+        uint32_t off191 = 0xFFFFFFFF;
+        if (offsets.dataPtr && 191 < offsets.numEntries) {
+            off191 = offsets.dataPtr[191];
+        }
+        char msg[192];
+        snprintf(msg, sizeof(msg), "DIAG offset[191] db=%s fmt=%d numEntries=%u -> %u (0x%X)",
+                 dbName, (int)format, offsets.numEntries, off191, off191);
+        Log("%s", msg);
+        if (pUI && pUI->chat()) {
+            pUI->chat()->addDebugMessage("%s", msg);
+        }
+    }
+
+    return result;
+}
+// === КОНЕЦ ВРЕМЕННОГО ДИАГНОСТИЧЕСКОГО ХУКА ===
+
 void (*TextureDatabaseRuntime__LoadFullTexture)(TextureDatabaseRuntime* thiz, uint32_t index);
 void TextureDatabaseRuntime__LoadFullTexture_hook(TextureDatabaseRuntime* thiz, uint32_t index) {
     const char* name = "?";
@@ -2071,6 +2100,7 @@ void InstallSpecialHooks()
     // OS_FileRead хук больше не нужен — dwRLEDecompressSourceSize не используется
 
     CHook::InlineHook("_ZN22TextureDatabaseRuntime15LoadFullTextureEj", &TextureDatabaseRuntime__LoadFullTexture_hook, &TextureDatabaseRuntime__LoadFullTexture);
+    CHook::InlineHook("_ZN15TextureDatabase15LoadDataOffsetsE21TextureDatabaseFormatR8TDBArrayIjERPvb", &TextureDatabase__LoadDataOffsets_hook, &TextureDatabase__LoadDataOffsets);
 
     //CHook::InlineHook("_Z32_rxOpenGLDefaultAllInOneRenderCBP10RwResEntryPvhj", &rxOpenGLDefaultAllInOneRenderCB_hook, &rxOpenGLDefaultAllInOneRenderCB);
     //CHook::InlineHook("_ZN25CCustomBuildingDNPipeline18CustomPipeRenderCBEP10RwResEntryPvhj", &CCustomBuildingDNPipeline__CustomPipeRenderCB_hook, &CCustomBuildingDNPipeline__CustomPipeRenderCB);
