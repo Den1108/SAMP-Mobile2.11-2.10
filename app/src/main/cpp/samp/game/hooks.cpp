@@ -1749,6 +1749,40 @@ void TextureDatabaseRuntime__LoadFullTexture_hook(TextureDatabaseRuntime* thiz, 
     TextureDatabaseRuntime__LoadFullTexture(thiz, index);
 }
 
+// === ВРЕМЕННЫЙ ХУК: разовая проверка ВСЕХ текстур базы при её загрузке ===
+// Перехватываем саму TextureDatabaseRuntime::Load (статическая фабричная
+// функция). Сразу после того как база реально загрузится, проходим по
+// всем её записям и дёргаем LoadFullTexture для каждой — раз защита от
+// краша уже стоит, это безопасно. В логе останутся только те записи,
+// на которых сработала ошибка/SIGSEGV (через уже существующий механизм
+// в RLEDecompress_hook).
+TextureDatabaseRuntime* (*TextureDatabaseRuntime__Load)(const char* name, bool fullyLoad, TextureDatabaseFormat format);
+TextureDatabaseRuntime* TextureDatabaseRuntime__Load_hook(const char* name, bool fullyLoad, TextureDatabaseFormat format) {
+    TextureDatabaseRuntime* result = TextureDatabaseRuntime__Load(name, fullyLoad, format);
+
+    static const char* alreadyScanned[32] = {};
+    static int scannedCount = 0;
+    bool wasScanned = false;
+    for (int i = 0; i < scannedCount; i++) {
+        if (result && strcmp(alreadyScanned[i], name) == 0) {
+            wasScanned = true;
+            break;
+        }
+    }
+
+    if (result && name && !wasScanned && scannedCount < 32) {
+        alreadyScanned[scannedCount++] = name;
+        Log("SelfTest: scanning db=%s (%u entries)...", name, result->entries.numEntries);
+        for (uint32_t i = 0; i < result->entries.numEntries; i++) {
+            TextureDatabaseRuntime__LoadFullTexture_hook(result, i);
+        }
+        Log("SelfTest: done scanning db=%s", name);
+    }
+
+    return result;
+}
+// === КОНЕЦ ВРЕМЕННОГО ХУКА ===
+
 // Ловушка на SIGSEGV: у некоторых записей (напр. concretemanky) поток
 // сжатых данных настолько битый, что чтение уходит далеко за пределы
 // СВОЕГО ЖЕ (source) буфера — а его точный размер нам неизвестен, так что
@@ -2046,6 +2080,7 @@ void InstallSpecialHooks()
     // OS_FileRead хук больше не нужен — dwRLEDecompressSourceSize не используется
 
     CHook::InlineHook("_ZN22TextureDatabaseRuntime15LoadFullTextureEj", &TextureDatabaseRuntime__LoadFullTexture_hook, &TextureDatabaseRuntime__LoadFullTexture);
+    CHook::InlineHook("_ZN22TextureDatabaseRuntime4LoadEPKcb21TextureDatabaseFormat", &TextureDatabaseRuntime__Load_hook, &TextureDatabaseRuntime__Load);
 
     //CHook::InlineHook("_Z32_rxOpenGLDefaultAllInOneRenderCBP10RwResEntryPvhj", &rxOpenGLDefaultAllInOneRenderCB_hook, &rxOpenGLDefaultAllInOneRenderCB);
     //CHook::InlineHook("_ZN25CCustomBuildingDNPipeline18CustomPipeRenderCBEP10RwResEntryPvhj", &CCustomBuildingDNPipeline__CustomPipeRenderCB_hook, &CCustomBuildingDNPipeline__CustomPipeRenderCB);
