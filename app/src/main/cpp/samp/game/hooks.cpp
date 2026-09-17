@@ -1816,7 +1816,21 @@ TextureDatabaseRuntime* TextureDatabaseRuntime__Load_hook(const char* name, bool
         for (uint32_t i = 0; i < result->entries.numEntries; i++) {
             if (!SelfTest_GuardedLoadFullTexture(result, i)) {
                 crashedCount++;
-                Log("SelfTest: CRASH on texture %s -- skipped", g_szCurrentTextureName);
+                // Диагностика: возможно, это не битые данные, а записи-алиасы
+                // (LOD/дубликаты), у которых union instance/matchingName
+                // хранит имя "донора" данных, а не указатель на растр —
+                // тогда format/category/status и raw-значение union помогут
+                // это подтвердить по логу без дизассемблера.
+                const TextureDatabaseEntry &e = result->entries.dataPtr[i];
+                Log("SelfTest: CRASH on texture %s -- skipped "
+                    "(fmt=%u alphaFmt=%u streamMode=%u status=%u cat=%u "
+                    "detailTex=%u detailTil=%u w=%u h=%u unionRaw=0x%llx)",
+                    g_szCurrentTextureName,
+                    (unsigned)e.format, (unsigned)e.alphaFormat, (unsigned)e.streamMode,
+                    (unsigned)e.status, (unsigned)e.category,
+                    (unsigned)e.detailTexture, (unsigned)e.detailTiling,
+                    (unsigned)e.width, (unsigned)e.height,
+                    (unsigned long long)(uintptr_t)e.instance);
             }
         }
         Log("SelfTest: done scanning db=%s (%u crashed/skipped)", name, crashedCount);
