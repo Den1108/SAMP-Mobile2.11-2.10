@@ -1752,10 +1752,49 @@ void TextureDatabaseRuntime__LoadFullTexture_hook(TextureDatabaseRuntime* thiz, 
 // === ВРЕМЕННЫЙ ХУК: разовая проверка ВСЕХ текстур базы при её загрузке ===
 // Перехватываем саму TextureDatabaseRuntime::Load (статическая фабричная
 // функция). Сразу после того как база реально загрузится, проходим по
-// всем её записям и дёргаем LoadFullTexture для каждой — раз защита от
-// краша уже стоит, это безопасно. В логе останутся только те записи,
-// на которых сработала ошибка/SIGSEGV (через уже существующий механизм
-// в RLEDecompress_hook).
+// всем её записям и дёргаем LoadFullTexture для каждой.
+//
+// ВАЖНО: защита в RLEDecompress_hook ловит краш только ВНУТРИ самого
+// RLE-алгоритма. На практике (см. лог) движок падает и в других местах —
+// например в RwRasterDestroy при попытке освободить битый растр внутри
+// TextureDatabaseEntry::LoadInstance, что происходит уже ПОСЛЕ распаковки
+// и снаружи try/sigsetjmp из RLEDecompress_hook. Поэтому здесь ставим свой,
+// отдельный SIGSEGV/SIGBUS-перехватчик вокруг каждого вызова LoadFullTexture
+// целиком — тогда битая запись просто логируется и пропускается, а
+// сканирование остальных записей базы продолжается.
+//
+// Это чисто диагностический механизм: после siglongjmp стек движка
+// обрывается без вызова деструкторов/освобождения то, что успело
+// заблокироваться/выделиться внутри LoadInstance. Для одноразового
+// прогона self-test'а по всем базам это ок, но не переносите этот приём
+// в боевой (не диагностический) путь загрузки текстур.
+static thread_local sigjmp_buf g_selfTestJmpBuf;
+static void SelfTest_SignalHandler(int) {
+    siglongjmp(g_selfTestJmpBuf, 1);
+}
+
+static bool SelfTest_GuardedLoadFullTexture(TextureDatabaseRuntime* thiz, uint32_t index) {
+    struct sigaction sa{};
+    struct sigaction oldSegv{};
+    struct sigaction oldBus{};
+    sa.sa_handler = SelfTest_SignalHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGSEGV, &sa, &oldSegv);
+    sigaction(SIGBUS, &sa, &oldBus);
+
+    bool ok = true;
+    if (sigsetjmp(g_selfTestJmpBuf, 1) == 0) {
+        TextureDatabaseRuntime__LoadFullTexture_hook(thiz, index);
+    } else {
+        ok = false;
+    }
+
+    sigaction(SIGSEGV, &oldSegv, nullptr);
+    sigaction(SIGBUS, &oldBus, nullptr);
+    return ok;
+}
+
 TextureDatabaseRuntime* (*TextureDatabaseRuntime__Load)(const char* name, bool fullyLoad, TextureDatabaseFormat format);
 TextureDatabaseRuntime* TextureDatabaseRuntime__Load_hook(const char* name, bool fullyLoad, TextureDatabaseFormat format) {
     TextureDatabaseRuntime* result = TextureDatabaseRuntime__Load(name, fullyLoad, format);
@@ -1773,10 +1812,14 @@ TextureDatabaseRuntime* TextureDatabaseRuntime__Load_hook(const char* name, bool
     if (result && name && !wasScanned && scannedCount < 32) {
         alreadyScanned[scannedCount++] = name;
         Log("SelfTest: scanning db=%s (%u entries)...", name, result->entries.numEntries);
+        uint32_t crashedCount = 0;
         for (uint32_t i = 0; i < result->entries.numEntries; i++) {
-            TextureDatabaseRuntime__LoadFullTexture_hook(result, i);
+            if (!SelfTest_GuardedLoadFullTexture(result, i)) {
+                crashedCount++;
+                Log("SelfTest: CRASH on texture %s -- skipped", g_szCurrentTextureName);
+            }
         }
-        Log("SelfTest: done scanning db=%s", name);
+        Log("SelfTest: done scanning db=%s (%u crashed/skipped)", name, crashedCount);
     }
 
     return result;
