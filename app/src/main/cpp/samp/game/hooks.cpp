@@ -1,6 +1,7 @@
 #include <GLES2/gl2.h>
 #include <csetjmp>
 #include <csignal>
+#include <thread>
 #include "../main.h"
 #include "../vendor/armhook/patch.h"
 #include "game.h"
@@ -1734,7 +1735,10 @@ bool RwResourcesFreeResEntry_hook(void* entry)
 
 // Логируем имя текущей текстуры перед полной загрузкой, чтобы точно
 // узнать, на какой именно текстуре крашит/спамит RLEDecompress.
-static char g_szCurrentTextureName[256] = "?";
+// thread_local: базы теперь могут сканироваться параллельно в отдельных
+// потоках (см. std::thread ниже в TextureDatabaseRuntime__Load_hook), так
+// что общий static здесь давал бы гонку и перепутанные имена в логе.
+static thread_local char g_szCurrentTextureName[256] = "?";
 
 void (*TextureDatabaseRuntime__LoadFullTexture)(TextureDatabaseRuntime* thiz, uint32_t index);
 void TextureDatabaseRuntime__LoadFullTexture_hook(TextureDatabaseRuntime* thiz, uint32_t index) {
@@ -1811,29 +1815,42 @@ TextureDatabaseRuntime* TextureDatabaseRuntime__Load_hook(const char* name, bool
 
     if (result && name && !wasScanned && scannedCount < 32) {
         alreadyScanned[scannedCount++] = name;
-        Log("SelfTest: scanning db=%s (%u entries)...", name, result->entries.numEntries);
-        uint32_t crashedCount = 0;
-        for (uint32_t i = 0; i < result->entries.numEntries; i++) {
-            if (!SelfTest_GuardedLoadFullTexture(result, i)) {
-                crashedCount++;
-                // Диагностика: возможно, это не битые данные, а записи-алиасы
-                // (LOD/дубликаты), у которых union instance/matchingName
-                // хранит имя "донора" данных, а не указатель на растр —
-                // тогда format/category/status и raw-значение union помогут
-                // это подтвердить по логу без дизассемблера.
-                const TextureDatabaseEntry &e = result->entries.dataPtr[i];
-                Log("SelfTest: CRASH on texture %s -- skipped "
-                    "(fmt=%u alphaFmt=%u streamMode=%u status=%u cat=%u "
-                    "detailTex=%u detailTil=%u w=%u h=%u unionRaw=0x%llx)",
-                    g_szCurrentTextureName,
-                    (unsigned)e.format, (unsigned)e.alphaFormat, (unsigned)e.streamMode,
-                    (unsigned)e.status, (unsigned)e.category,
-                    (unsigned)e.detailTexture, (unsigned)e.detailTiling,
-                    (unsigned)e.width, (unsigned)e.height,
-                    (unsigned long long)(uintptr_t)e.instance);
+
+        // ВАЖНО: у баз вроде gta3 (12000+ записей, из них ~1200 битых) сам
+        // прогон синхронно на главном потоке во время InitialiseRenderWare
+        // занимает столько времени (каждый крашнутый вызов — это sigaction
+        // x2 + доставка сигнала ядром + siglongjmp), что система считает
+        // процесс подвисшим и убивает его по таймауту ДО первого кадра —
+        // без SIGSEGV в логе и без бэктрейса, просто обрыв. Поэтому уводим
+        // сам скан в отдельный поток, а Load_hook возвращается немедленно
+        // и не блокирует ни рендер, ни watchdog.
+        //
+        // Оговорка: sigaction() меняет обработчик ПРОЦЕССА, а не только
+        // этого потока. На время скана SIGSEGV/SIGBUS на любом потоке будет
+        // ловиться этим обработчиком — если в этот момент упадёт что-то
+        // совсем другое (не self-test) на другом потоке, siglongjmp уйдёт
+        // в НЕинициализированный thread_local jmp_buf того потока. Это
+        // приемлемо для одноразовой диагностики, но не для боевого кода.
+        std::thread([result, name = std::string(name)]() {
+            Log("SelfTest: scanning db=%s (%u entries)... [async]", name.c_str(), result->entries.numEntries);
+            uint32_t crashedCount = 0;
+            for (uint32_t i = 0; i < result->entries.numEntries; i++) {
+                if (!SelfTest_GuardedLoadFullTexture(result, i)) {
+                    crashedCount++;
+                    const TextureDatabaseEntry &e = result->entries.dataPtr[i];
+                    Log("SelfTest: CRASH on texture %s -- skipped "
+                        "(fmt=%u alphaFmt=%u streamMode=%u status=%u cat=%u "
+                        "detailTex=%u detailTil=%u w=%u h=%u unionRaw=0x%llx)",
+                        g_szCurrentTextureName,
+                        (unsigned)e.format, (unsigned)e.alphaFormat, (unsigned)e.streamMode,
+                        (unsigned)e.status, (unsigned)e.category,
+                        (unsigned)e.detailTexture, (unsigned)e.detailTiling,
+                        (unsigned)e.width, (unsigned)e.height,
+                        (unsigned long long)(uintptr_t)e.instance);
+                }
             }
-        }
-        Log("SelfTest: done scanning db=%s (%u crashed/skipped)", name, crashedCount);
+            Log("SelfTest: done scanning db=%s (%u crashed/skipped) [async]", name.c_str(), crashedCount);
+        }).detach();
     }
 
     return result;
